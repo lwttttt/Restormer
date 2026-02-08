@@ -1,10 +1,38 @@
-.ipynb_checkpoints/
+# Python
 *.pyc
+__pycache__/
+*.egg-info/
+.eggs/
+
+# Data & Model weights
+*.pth
 *.png
 *.tif
 *.jpg
-*.pth
+*.jpeg
+*.bmp
 *.mat
 *.npy
+*.zip
+*.tar.gz
+
+# Datasets & test data
+Deraining/Datasets/
+Denoising/Datasets/
+Motion_Deblurring/Datasets/
+Defocus_Deblurring/Datasets/
+test_samples/
+test_samples_restored/
+demo/degraded/
+demo/restored/
+
+# Virtual environment
+restormer_env/
+
+# Build & IDE
+.ipynb_checkpoints/
 .DS_Store
 
+# SLURM logs
+*.out
+*.err
