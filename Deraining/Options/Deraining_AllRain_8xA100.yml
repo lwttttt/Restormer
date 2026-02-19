@@ -79,6 +79,13 @@ train:
   warmup_iter: -1 # no warm up
   use_grad_clip: true
 
+  # Rain soft label for Predictor head GT
+  rain_soft_label:
+    enabled: true
+    codebook_dir: ./rain_features_hog_t10（用的是这个）/cluster_pca50_all
+    temperature: 2000.0
+    energy_threshold: 10.0
+
   # Split 200k iterations into two cycles.
   # 1st cycle: fixed 3e-4 LR for 60k iters.
   # 2nd cycle: cosine annealing (3e-4 to 1e-6) for 140k iters.

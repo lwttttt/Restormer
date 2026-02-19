@@ -201,6 +201,20 @@ def main():
         raise ValueError(f'Wrong prefetch_mode {prefetch_mode}.'
                          "Supported ones are: None, 'cuda', 'cpu'.")
 
+    # --- Rain Soft Label Generator ---
+    rain_label_gen = None
+    if opt['train'].get('rain_soft_label', {}).get('enabled', False):
+        from basicsr.utils.rain_label import RainSoftLabelGenerator
+        rl_cfg = opt['train']['rain_soft_label']
+        rain_label_gen = RainSoftLabelGenerator(
+            codebook_dir=rl_cfg['codebook_dir'],
+            temperature=rl_cfg.get('temperature', 1.0),
+            energy_threshold=rl_cfg.get('energy_threshold', 10.0),
+        )
+        logger.info(f'Rain soft label enabled: codebook={rl_cfg["codebook_dir"]}, '
+                     f'tau={rl_cfg.get("temperature", 1.0)}, '
+                     f'threshold={rl_cfg.get("energy_threshold", 10.0)}')
+
     # training
     logger.info(
         f'Start training from epoch: {start_epoch}, iter: {current_iter}')
@@ -270,7 +284,10 @@ def main():
             ###-------------------------------------------
 
             
-            model.feed_train_data({'lq': lq, 'gt':gt})
+            train_dict = {'lq': lq, 'gt': gt}
+            if rain_label_gen is not None:
+                train_dict['rain_soft_label'] = rain_label_gen.compute_soft_labels(lq, gt)
+            model.feed_train_data(train_dict)
             model.optimize_parameters(current_iter)
 
             iter_time = time.time() - iter_time

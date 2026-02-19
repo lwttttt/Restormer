@@ -138,6 +138,11 @@ class ImageCleanModel(BaseModel):
         if 'gt' in data:
             self.gt = data['gt'].to(self.device)
 
+        # 接收 rain soft label (Predictor GT, 后续加 KL loss 时使用)
+        self.rain_soft_label = data.get('rain_soft_label')
+        if self.rain_soft_label is not None:
+            self.rain_soft_label = self.rain_soft_label.to(self.device)
+
         if self.mixing_flag:
             self.gt, self.lq = self.mixing_augmentation(self.gt, self.lq)
 
