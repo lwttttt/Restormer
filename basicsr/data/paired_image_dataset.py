@@ -12,6 +12,7 @@ import random
 import numpy as np
 import torch
 import cv2
+from os import path as osp
 
 class Dataset_PairedImage(data.Dataset):
     """Paired image dataset for image restoration.
@@ -75,6 +76,13 @@ class Dataset_PairedImage(data.Dataset):
         if self.opt['phase'] == 'train':
             self.geometric_augs = opt['geometric_augs']
 
+        # 离线目标软标签
+        labels_path = self.opt.get('target_labels_path', None)
+        if labels_path:
+            self.target_labels = torch.load(labels_path, map_location='cpu')
+        else:
+            self.target_labels = None
+
     def __getitem__(self, index):
         if self.file_client is None:
             self.file_client = FileClient(
@@ -121,12 +129,20 @@ class Dataset_PairedImage(data.Dataset):
             normalize(img_lq, self.mean, self.std, inplace=True)
             normalize(img_gt, self.mean, self.std, inplace=True)
         
-        return {
-            'lq': img_lq,
-            'gt': img_gt,
-            'lq_path': lq_path,
-            'gt_path': gt_path
-        }
+        if self.target_labels is not None:
+            basename = osp.splitext(osp.basename(lq_path))[0]
+            label = self.target_labels.get(
+                basename, torch.full((7,), 1.0 / 7)).float()
+            return {
+                'lq': img_lq, 'gt': img_gt,
+                'lq_path': lq_path, 'gt_path': gt_path,
+                'target_label': label
+            }
+        else:
+            return {
+                'lq': img_lq, 'gt': img_gt,
+                'lq_path': lq_path, 'gt_path': gt_path
+            }
 
     def __len__(self):
         return len(self.paths)

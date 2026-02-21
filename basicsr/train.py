@@ -201,19 +201,9 @@ def main():
         raise ValueError(f'Wrong prefetch_mode {prefetch_mode}.'
                          "Supported ones are: None, 'cuda', 'cpu'.")
 
-    # --- Rain Soft Label Generator ---
-    rain_label_gen = None
-    if opt['train'].get('rain_soft_label', {}).get('enabled', False):
-        from basicsr.utils.rain_label import RainSoftLabelGenerator
-        rl_cfg = opt['train']['rain_soft_label']
-        rain_label_gen = RainSoftLabelGenerator(
-            codebook_dir=rl_cfg['codebook_dir'],
-            temperature=rl_cfg.get('temperature', 1.0),
-            energy_threshold=rl_cfg.get('energy_threshold', 10.0),
-        )
-        logger.info(f'Rain soft label enabled: codebook={rl_cfg["codebook_dir"]}, '
-                     f'tau={rl_cfg.get("temperature", 1.0)}, '
-                     f'threshold={rl_cfg.get("energy_threshold", 10.0)}')
+    # --- Rain Soft Label Generator (DEPRECATED: 已迁移到离线标签 + WeatherRouter 蒸馏) ---
+    # 离线标签通过 Dataset 的 target_labels_path 配置加载
+    # 在线路由由 WeatherRouter CNN 完成 (见 image_restoration_model.py)
 
     # training
     logger.info(
@@ -285,8 +275,12 @@ def main():
 
             
             train_dict = {'lq': lq, 'gt': gt}
-            if rain_label_gen is not None:
-                train_dict['rain_soft_label'] = rain_label_gen.compute_soft_labels(lq, gt)
+            # target_label 从 Dataset 按文件名查表获取 (如有)
+            if 'target_label' in train_data:
+                target_label = train_data['target_label']
+                if mini_batch_size < batch_size:
+                    target_label = target_label[indices]
+                train_dict['target_label'] = target_label
             model.feed_train_data(train_dict)
             model.optimize_parameters(current_iter)
 

@@ -72,6 +72,22 @@ class ImageCleanModel(BaseModel):
             self.load_network(self.net_g, load_path,
                               self.opt['path'].get('strict_load_g', True), param_key=self.opt['path'].get('param_key', 'params'))
 
+        # WeatherRouter 初始化 (训练时)
+        router_opt = self.opt.get('network_router', None)
+        if router_opt and self.is_train:
+            from basicsr.models.archs.weather_router import WeatherRouter
+            self.weather_router = WeatherRouter(
+                in_channels=router_opt.get('in_channels', 3),
+                num_classes=router_opt.get('num_classes', 7)
+            ).to(self.device)
+            self.lambda_router = self.opt['train'].get('lambda_router', 0.1)
+            logger = get_root_logger()
+            n_params = sum(p.numel() for p in self.weather_router.parameters())
+            logger.info(f'WeatherRouter initialized: {n_params} params, '
+                        f'lambda_router={self.lambda_router}')
+        else:
+            self.weather_router = None
+
         if self.is_train:
             self.init_training_settings()
 
@@ -123,6 +139,12 @@ class ImageCleanModel(BaseModel):
                 logger = get_root_logger()
                 logger.warning(f'Params {k} will not be optimized.')
 
+        # Router 参数加入 optimizer
+        if hasattr(self, 'weather_router') and self.weather_router is not None:
+            for k, v in self.weather_router.named_parameters():
+                if v.requires_grad:
+                    optim_params.append(v)
+
         optim_type = train_opt['optim_g'].pop('type')
         if optim_type == 'Adam':
             self.optimizer_g = torch.optim.Adam(optim_params, **train_opt['optim_g'])
@@ -138,10 +160,10 @@ class ImageCleanModel(BaseModel):
         if 'gt' in data:
             self.gt = data['gt'].to(self.device)
 
-        # 接收 rain soft label (Predictor GT, 后续加 KL loss 时使用)
-        self.rain_soft_label = data.get('rain_soft_label')
-        if self.rain_soft_label is not None:
-            self.rain_soft_label = self.rain_soft_label.to(self.device)
+        # 接收离线目标软标签 (用于 Router 蒸馏 CrossEntropy Loss)
+        self.target_label = data.get('target_label')
+        if self.target_label is not None:
+            self.target_label = self.target_label.to(self.device)
 
         if self.mixing_flag:
             self.gt, self.lq = self.mixing_augmentation(self.gt, self.lq)
@@ -150,10 +172,14 @@ class ImageCleanModel(BaseModel):
         self.lq = data['lq'].to(self.device)
         if 'gt' in data:
             self.gt = data['gt'].to(self.device)
+        # Oracle: 验证时也需要真实标签作为 condition
+        self.target_label = data.get('target_label')
+        if self.target_label is not None:
+            self.target_label = self.target_label.to(self.device)
 
     def optimize_parameters(self, current_iter):
         self.optimizer_g.zero_grad()
-        preds = self.net_g(self.lq)
+        preds = self.net_g(self.lq, condition=self.target_label)
         if not isinstance(preds, list):
             preds = [preds]
 
@@ -167,7 +193,16 @@ class ImageCleanModel(BaseModel):
 
         loss_dict['l_pix'] = l_pix
 
-        l_pix.backward()
+        # Router distillation loss — CrossEntropy 原生支持 soft label target
+        if self.weather_router is not None and self.target_label is not None:
+            logits = self.weather_router(self.lq)
+            l_router = F.cross_entropy(logits, self.target_label)
+            loss_dict['l_router'] = l_router
+            l_total = l_pix + self.lambda_router * l_router
+        else:
+            l_total = l_pix
+
+        l_total.backward()
         if self.opt['train']['use_grad_clip']:
             torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), 0.01)
         self.optimizer_g.step()
@@ -192,18 +227,20 @@ class ImageCleanModel(BaseModel):
 
     def nonpad_test(self, img=None):
         if img is None:
-            img = self.lq      
+            img = self.lq
+        # Oracle: 验证/测试时也传入真实天气标签
+        condition = getattr(self, 'target_label', None)
         if hasattr(self, 'net_g_ema'):
             self.net_g_ema.eval()
             with torch.no_grad():
-                pred = self.net_g_ema(img)
+                pred = self.net_g_ema(img, condition=condition)
             if isinstance(pred, list):
                 pred = pred[-1]
             self.output = pred
         else:
             self.net_g.eval()
             with torch.no_grad():
-                pred = self.net_g(img)
+                pred = self.net_g(img, condition=condition)
             if isinstance(pred, list):
                 pred = pred[-1]
             self.output = pred

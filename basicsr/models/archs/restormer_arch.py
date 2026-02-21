@@ -242,9 +242,26 @@ class Restormer(nn.Module):
             
         self.output = nn.Conv2d(int(dim*2**1), out_channels, kernel_size=3, stride=1, padding=1, bias=bias)
 
-    def forward(self, inp_img):
+        # ---- FiLM 条件注入: 7 维天气标签 → dim 维通道缩放系数 ----
+        self.condition_mlp = nn.Sequential(
+            nn.Linear(7, dim),
+            nn.GELU(),
+            nn.Linear(dim, dim)
+        )
+        # 零初始化最后一层: 训练初期 scale≈0, feat*(1+0)=feat, 不干扰收敛
+        nn.init.zeros_(self.condition_mlp[2].weight)
+        nn.init.zeros_(self.condition_mlp[2].bias)
+
+    def forward(self, inp_img, condition=None):
 
         inp_enc_level1 = self.patch_embed(inp_img)
+
+        # ---- FiLM: 根据天气形态对浅层特征做 channel-wise 缩放 ----
+        if condition is not None:
+            scale = self.condition_mlp(condition)          # [B, dim]
+            scale = scale.unsqueeze(-1).unsqueeze(-1)      # [B, dim, 1, 1]
+            inp_enc_level1 = inp_enc_level1 * (1 + scale)  # FiLM 调制
+
         out_enc_level1 = self.encoder_level1(inp_enc_level1)
         
         inp_enc_level2 = self.down1_2(out_enc_level1)

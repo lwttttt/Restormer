@@ -1,5 +1,15 @@
 # ---------------------------------------------------------------
-# 基于 Deraining_Restormer.yml 修改，适配自定义多源去雨数据集
+# Oracle UpperBound 实验: FiLM 条件注入 (全程 ground truth 标签)
+#
+# 目的: 验证如果网络在训练+验证时都知道每张图的真实天气形态标签 (7维概率分布),
+#       去雨效果能提升多少? Oracle - Baseline 的 PSNR 差 = 理论增益上限。
+#
+# 与 Baseline 的区别:
+#   - 训练集和验证集都配了 target_labels_path
+#   - 不启用 WeatherRouter (network_router 已注释掉)
+#   - 只有 L1 像素 loss, 无 Router 蒸馏 loss
+#   - Restormer 的 condition_mlp 通过 FiLM 在浅层特征做 channel-wise 缩放
+#
 # 训练环境: 8x A100 (80GB)
 # 数据集: sampled_dataset_balanced (7个去雨数据集的平衡采样)
 # 训练集: ~7361 对图像 (AllRain)
@@ -7,7 +17,7 @@
 # ---------------------------------------------------------------
 
 # general settings
-name: Deraining_AllRain_Restormer
+name: Deraining_Oracle_Restormer
 model_type: ImageCleanModel
 scale: 1
 num_gpu: 8  # 8x A100
@@ -22,7 +32,7 @@ datasets:
     dataroot_lq: ./Deraining/Datasets/train/AllRain/input
     geometric_augs: true
 
-    # 离线目标软标签 (7类知识蒸馏)
+    # Oracle: 训练集离线目标软标签
     target_labels_path: ./offline_features_v2/train_target_labels_7c.pt
 
     filename_tmpl: '{}'
@@ -35,9 +45,6 @@ datasets:
     batch_size_per_gpu: 8
 
     ### -------------Progressive training--------------------------
-    # 数据集较小(~7361)，适当减少总迭代次数
-    # 原始Rain13K有13000+图像，300k迭代
-    # 我们约7361图像，按比例调整为200k迭代
     mini_batch_sizes: [8,5,4,2,1,1]
     iters: [60000,44000,32000,24000,24000,16000]
     gt_size: 384   # Max patch size for progressive training
@@ -55,6 +62,9 @@ datasets:
     io_backend:
       type: disk
 
+    # Oracle: 验证集也必须配标签! 否则 condition=None, FiLM 不生效
+    target_labels_path: ./offline_features_v2/val_target_labels_7c.pt
+
 # network structures
 network_g:
   type: Restormer
@@ -69,11 +79,11 @@ network_g:
   LayerNorm_type: WithBias
   dual_pixel_task: False
 
-# WeatherRouter: 极轻量 CNN 路由网络 (~11K params)
-network_router:
-  type: WeatherRouter
-  in_channels: 3
-  num_classes: 7
+# Oracle 实验: 不启用 WeatherRouter, 不计算 Router loss
+# network_router:
+#   type: WeatherRouter
+#   in_channels: 3
+#   num_classes: 7
 
 
 # path
@@ -87,9 +97,6 @@ train:
   total_iter: 200000
   warmup_iter: -1 # no warm up
   use_grad_clip: true
-
-  # Router 蒸馏 loss 权重
-  lambda_router: 0.1
 
   # Split 200k iterations into two cycles.
   # 1st cycle: fixed 3e-4 LR for 60k iters.
@@ -111,7 +118,7 @@ train:
     weight_decay: !!float 1e-4
     betas: [0.9, 0.999]
 
-  # losses
+  # losses (纯 L1, 无 Router loss)
   pixel_opt:
     type: L1Loss
     loss_weight: 1

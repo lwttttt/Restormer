@@ -1,14 +1,18 @@
 """
-在线 Rain Soft Label 生成器
+[DEPRECATED] 在线 Rain Soft Label 生成器
 
+本模块已废弃。已迁移到：
+  - 离线特征提取: core_scripts/3_analysis/extract_offline_features.py
+  - 离线标签生成: core_scripts/3_analysis/generate_target_labels_7c.py
+  - 在线路由: basicsr/models/archs/weather_router.py (WeatherRouter CNN)
+
+保留此文件仅作参考。新训练管线不再调用此模块。
+
+原功能:
 将 rain_layer (lq - gt) 通过 HOG + PCA + Codebook 距离
 转换为 7 类软标签概率分布 T:
   - 第 0 类: 无雨/背景 (灰度 std < threshold)
   - 第 1~6 类: 6 种雨纹聚类 (softmax(-distance²/τ))
-
-用法:
-    gen = RainSoftLabelGenerator(codebook_dir, temperature=1.0, energy_threshold=10.0)
-    T = gen.compute_soft_labels(lq_batch, gt_batch)  # (B, 7)
 """
 import numpy as np
 import torch
