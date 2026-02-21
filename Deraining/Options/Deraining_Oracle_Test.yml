@@ -1,0 +1,127 @@
+# ---------------------------------------------------------------
+# Oracle UpperBound 测试配置
+# 在 7 个去雨测试集上评估 Oracle 模型 (FiLM + GT 标签)
+# ---------------------------------------------------------------
+
+# general settings
+name: Test_Oracle_Restormer
+model_type: ImageCleanModel
+scale: 1
+num_gpu: 4
+manual_seed: 100
+
+# test datasets
+datasets:
+  test_1:
+    name: RainDS-Syn
+    type: Dataset_PairedImage
+    dataroot_gt: ./Deraining/Datasets/test/RainDS-Syn/target
+    dataroot_lq: ./Deraining/Datasets/test/RainDS-Syn/input
+    target_labels_path: ./offline_features_v2/test_target_labels_7c.pt
+    io_backend:
+      type: disk
+
+  test_2:
+    name: LHP-RAIN
+    type: Dataset_PairedImage
+    dataroot_gt: ./Deraining/Datasets/test/LHP-RAIN/target
+    dataroot_lq: ./Deraining/Datasets/test/LHP-RAIN/input
+    target_labels_path: ./offline_features_v2/test_target_labels_7c.pt
+    io_backend:
+      type: disk
+
+  test_3:
+    name: RainDrop
+    type: Dataset_PairedImage
+    dataroot_gt: ./Deraining/Datasets/test/RainDrop/target
+    dataroot_lq: ./Deraining/Datasets/test/RainDrop/input
+    target_labels_path: ./offline_features_v2/test_target_labels_7c.pt
+    io_backend:
+      type: disk
+
+  test_4:
+    name: RainDS-Real
+    type: Dataset_PairedImage
+    dataroot_gt: ./Deraining/Datasets/test/RainDS-Real/target
+    dataroot_lq: ./Deraining/Datasets/test/RainDS-Real/input
+    target_labels_path: ./offline_features_v2/test_target_labels_7c.pt
+    io_backend:
+      type: disk
+
+  test_5:
+    name: RealRain-1k
+    type: Dataset_PairedImage
+    dataroot_gt: ./Deraining/Datasets/test/RealRain-1k/target
+    dataroot_lq: ./Deraining/Datasets/test/RealRain-1k/input
+    target_labels_path: ./offline_features_v2/test_target_labels_7c.pt
+    io_backend:
+      type: disk
+
+  test_6:
+    name: SynRain-13k
+    type: Dataset_PairedImage
+    dataroot_gt: ./Deraining/Datasets/test/SynRain-13k/target
+    dataroot_lq: ./Deraining/Datasets/test/SynRain-13k/input
+    target_labels_path: ./offline_features_v2/test_target_labels_7c.pt
+    io_backend:
+      type: disk
+
+  test_7:
+    name: WeatherBench
+    type: Dataset_PairedImage
+    dataroot_gt: ./Deraining/Datasets/test/WeatherBench/target
+    dataroot_lq: ./Deraining/Datasets/test/WeatherBench/input
+    target_labels_path: ./offline_features_v2/test_target_labels_7c.pt
+    io_backend:
+      type: disk
+
+# network structures
+network_g:
+  type: Restormer
+  inp_channels: 3
+  out_channels: 3
+  dim: 48
+  num_blocks: [4,6,6,8]
+  num_refinement_blocks: 4
+  heads: [1,2,4,8]
+  ffn_expansion_factor: 2.66
+  bias: False
+  LayerNorm_type: WithBias
+  dual_pixel_task: False
+
+# training settings (model init 需要读取, 测试时不实际使用)
+train:
+  mixing_augs:
+    mixup: false
+    mixup_beta: 1.2
+    use_identity: true
+
+# path
+path:
+  pretrain_network_g: __CKPT_PATH__
+  strict_load_g: true
+
+# validation settings
+val:
+  window_size: 8
+  tile: 720
+  tile_overlap: 32
+  save_img: false
+  rgb2bgr: true
+  use_image: true
+  max_minibatch: 8
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: true
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: true
+
+# dist settings
+dist_params:
+  backend: nccl
+  port: 29501

@@ -225,6 +225,40 @@ class ImageCleanModel(BaseModel):
         _, _, h, w = self.output.size()
         self.output = self.output[:, :, 0:h - mod_pad_h * scale, 0:w - mod_pad_w * scale]
 
+    def tile_test(self, tile_size=720, tile_overlap=32):
+        """Process image tile by tile for large images."""
+        scale = self.opt.get('scale', 1)
+        img = self.lq
+        b, c, h, w = img.shape
+        tile = min(tile_size, h, w)
+        tile_overlap = tile_overlap
+        stride = tile - tile_overlap
+
+        h_idx_list = list(range(0, h - tile, stride)) + [h - tile]
+        w_idx_list = list(range(0, w - tile, stride)) + [w - tile]
+        E = torch.zeros(b, c, h, w).type_as(img)
+        W = torch.zeros_like(E)
+
+        condition = getattr(self, 'target_label', None)
+        net = self.net_g_ema if hasattr(self, 'net_g_ema') else self.net_g
+        net.eval()
+
+        with torch.no_grad():
+            for h_idx in h_idx_list:
+                for w_idx in w_idx_list:
+                    in_patch = img[..., h_idx:h_idx + tile, w_idx:w_idx + tile]
+                    out_patch = net(in_patch, condition=condition)
+                    if isinstance(out_patch, list):
+                        out_patch = out_patch[-1]
+                    out_patch_mask = torch.ones_like(out_patch)
+                    E[..., h_idx:h_idx + tile, w_idx:w_idx + tile].add_(out_patch)
+                    W[..., h_idx:h_idx + tile, w_idx:w_idx + tile].add_(out_patch_mask)
+
+        self.output = E.div_(W)
+
+        if not hasattr(self, 'net_g_ema'):
+            self.net_g.train()
+
     def nonpad_test(self, img=None):
         if img is None:
             img = self.lq
@@ -264,8 +298,12 @@ class ImageCleanModel(BaseModel):
         # pbar = tqdm(total=len(dataloader), unit='image')
 
         window_size = self.opt['val'].get('window_size', 0)
+        tile_size = self.opt['val'].get('tile', None)
+        tile_overlap = self.opt['val'].get('tile_overlap', 32)
 
-        if window_size:
+        if tile_size:
+            test = partial(self.tile_test, tile_size, tile_overlap)
+        elif window_size:
             test = partial(self.pad_test, window_size)
         else:
             test = self.nonpad_test

@@ -36,3 +36,9 @@ restormer_env/
 # SLURM logs
 *.out
 *.err
+
+# Training artifacts
+experiments/
+tb_logger/
+slurm-*
+*.csv

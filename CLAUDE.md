@@ -122,6 +122,37 @@ srun --gres=gpu:8 python -m torch.distributed.launch --nproc_per_node=8 \
 
 3. **对照实验解读**：`Oracle PSNR - Baseline PSNR = 天气形态引导的理论增益上限`
 
+4. **[血泪教训] PYTHONPATH 必须显式设置！**
+
+   **问题**：服务器上同时存在 `Restormer/`（原始版本）和 `Restormer-oracle/`（Oracle 版本），两者的 `setup.py` 都安装名为 `basicsr` 的 Python 包。当通过 `setup.py develop` 安装后，`import basicsr` 会解析到 **最后安装的那个版本**，而不是当前工作目录下的 `basicsr/`。
+
+   **后果**：即使 `cd Restormer-oracle/` 后运行训练，如果 `Restormer/` 的 basicsr 是最后安装的，Python 实际加载的是 **原始 Restormer 的 `restormer_arch.py`**（没有 `condition_mlp`），导致：
+   - 训练全程没有 FiLM 条件注入，等于又训了一遍 Baseline
+   - checkpoint 中不含 `condition_mlp` 权重（494 个 key 而非 498 个）
+   - 浪费数小时 GPU 时间
+
+   **根本原因**：`basicsr/utils/options.py` 第 64 行用 `__file__` 计算 root 路径：
+   ```python
+   opt['path']['root'] = osp.abspath(osp.join(__file__, osp.pardir, osp.pardir, osp.pardir))
+   ```
+   如果 `__file__` 指向 `/Restormer/basicsr/utils/options.py`，root 就是 `/Restormer/` 而非 `/Restormer-oracle/`。
+
+   **修复**：在训练和测试脚本中 **必须** 显式设置 PYTHONPATH：
+   ```bash
+   export PYTHONPATH="/HOME/pxyai/pxyai_0009/Restormer-oracle:$PYTHONPATH"
+   ```
+   并在训练前加验证步骤确认 `condition_mlp` 存在（见 `run_train_oracle.sh`）。
+
+   **如何检查 checkpoint 是否正确**：
+   ```python
+   ckpt = torch.load('net_g_XXXX.pth', map_location='cpu')
+   keys = list(ckpt['params'].keys())
+   has_film = any('condition_mlp' in k for k in keys)
+   print(f"参数数: {len(keys)}, condition_mlp: {has_film}")
+   # 正确: 498 个 key, condition_mlp=True
+   # 错误: 494 个 key, condition_mlp=False (实际是 vanilla Restormer)
+   ```
+
 ## 文件结构
 
 ```
