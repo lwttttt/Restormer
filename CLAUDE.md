@@ -47,19 +47,80 @@ inp_img → patch_embed → feat [B,48,H,W]
 - 从 `.pt` 文件按文件名 basename 查表返回 7 维标签
 - 训练集和验证集都需要配置各自的 `target_labels_path`
 
-## Oracle 实验运行注意事项
+## 快速开始 (服务器端)
+
+### 拉取代码
+
+```bash
+git clone -b feature/rain-soft-label git@github.com:lwttttt/Restormer.git Restormer-oracle
+cd Restormer-oracle
+```
+
+### 数据集准备
+
+训练集和测试集需要放到如下位置（已有则跳过）：
+
+```
+Deraining/Datasets/
+├── train/AllRain/
+│   ├── input/    # ~7361 张雨图
+│   └── target/   # ~7361 张干净图
+└── test/
+    ├── RainDS-Syn/     # 267 对 (验证集)
+    ├── LHP-RAIN/       # 450 对
+    ├── RainDrop/       # 180 对
+    ├── RainDS-Real/    # 293 对
+    ├── RealRain-1k/    # 450 对
+    ├── SynRain-13k/    # 121 对
+    └── WeatherBench/   # 21 对
+```
+
+### 标签文件（已随代码提交，无需额外操作）
+
+仓库 `offline_features_v2/` 下已包含三个标签文件：
+
+| 文件 | 图片数 | 用途 |
+|------|--------|------|
+| `train_target_labels_7c.pt` | 7,361 | 训练集标签 |
+| `val_target_labels_7c.pt` | 267 | 验证集标签 (RainDS-Syn) |
+| `test_target_labels_7c.pt` | 1,782 | 全部测试集标签 (7个数据集) |
+
+格式：`dict[str, Tensor]`，key 是图片 basename（如 `RainDS-Syn_007503`），value 是 `[7]` 维概率分布。
+
+### 运行 Oracle 实验
+
+```bash
+# 单机 8 卡
+python -m torch.distributed.launch --nproc_per_node=8 basicsr/train.py \
+  -opt Deraining/Options/Deraining_Oracle_8xA100.yml --launcher pytorch
+
+# 如果用 SLURM
+srun --gres=gpu:8 python -m torch.distributed.launch --nproc_per_node=8 \
+  basicsr/train.py -opt Deraining/Options/Deraining_Oracle_8xA100.yml --launcher pytorch
+```
+
+### 运行 Baseline 实验（对照组）
+
+用 `Deraining_AllRain_8xA100.yml`，但需要注释掉 `network_router` 段和 `target_labels_path`，使网络不接收任何 condition：
+
+```yaml
+# 注释掉这些：
+# target_labels_path: ...
+# network_router:
+#   type: WeatherRouter
+#   ...
+```
+
+## Oracle 实验注意事项
 
 1. **YAML 配置**：使用 `Deraining_Oracle_8xA100.yml`
    - `network_router` 段已注释掉 → `self.weather_router = None` → 无 Router loss
    - 训练集和验证集都配了 `target_labels_path`
    - 只有 L1 像素 loss
 
-2. **标签文件**：
-   - 训练集：`./offline_features_v2/train_target_labels_7c.pt`
-   - 验证集：`./offline_features_v2/val_target_labels_7c.pt`
-   - 格式：`dict[str, Tensor]`，key 是图片 basename，value 是 `[7]` 维概率分布
+2. **验证集标签不能缺**：如果验证集 YAML 没配 `target_labels_path`，`feed_data()` 中 `target_label=None`，FiLM 不生效，验证 PSNR 不代表 Oracle 性能。网络训练时学到了依赖 condition 的特征缩放，验证时不传 condition 会导致特征分布不一致。
 
-3. **验证集标签缺失检查**：如果验证集 YAML 没配 `target_labels_path`，`feed_data()` 中 `target_label=None`，FiLM 不生效，验证指标不代表 Oracle 性能
+3. **对照实验解读**：`Oracle PSNR - Baseline PSNR = 天气形态引导的理论增益上限`
 
 ## 文件结构
 
@@ -76,6 +137,10 @@ Restormer/
 │   ├── train.py                         # 训练入口，target_label 从 Dataset 透传
 │   └── utils/
 │       └── rain_label.py                # [DEPRECATED] 在线标签生成，已迁移到离线
+├── offline_features_v2/
+│   ├── train_target_labels_7c.pt        # 训练集 7 维软标签 (7361 张)
+│   ├── val_target_labels_7c.pt          # 验证集 7 维软标签 (RainDS-Syn 267 张)
+│   └── test_target_labels_7c.pt         # 测试集 7 维软标签 (全部 1782 张)
 ├── Deraining/Options/
 │   ├── Deraining_AllRain_8xA100.yml     # Router 方案配置
 │   └── Deraining_Oracle_8xA100.yml      # Oracle UpperBound 配置
