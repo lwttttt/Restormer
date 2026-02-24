@@ -1,3 +1,6 @@
+# DEPRECATED: WeatherRouter is no longer used. Rain prediction is now handled
+# internally by RainPredictor inside Restormer. This file is kept for backward
+# compatibility with old checkpoints.
 """
 WeatherRouter: 极轻量 CNN 路由网络
 

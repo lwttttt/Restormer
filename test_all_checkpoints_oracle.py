@@ -57,8 +57,8 @@ def load_model(yaml_file, weights_path, device='cuda:0'):
     else:
         state_dict = checkpoint
 
-    # strict=False: 允许 checkpoint 缺少 condition_mlp 权重
-    # (condition_mlp 零初始化，缺失时 FiLM 无效果，等价于 scale=0)
+    # strict=False: 允许 checkpoint 缺少 rain_predictor/film_mlp 权重
+    # (零初始化，缺失时 FiLM 无效果，等价于 scale=0)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing:
         warnings.warn(f"Missing keys in checkpoint (will use init values): {missing}")
@@ -70,17 +70,7 @@ def load_model(yaml_file, weights_path, device='cuda:0'):
     return model
 
 
-def load_target_labels(labels_path):
-    """加载离线标签文件, 返回 dict[str, Tensor]"""
-    if not os.path.exists(labels_path):
-        warnings.warn(f"标签文件不存在: {labels_path}")
-        return {}
-    labels = torch.load(labels_path, map_location='cpu')
-    print(f"  加载标签: {labels_path} ({len(labels)} 条)")
-    return labels
-
-
-def tile_inference(model, input_, condition=None, tile_size=720, tile_overlap=32):
+def tile_inference(model, input_, tile_size=720, tile_overlap=32):
     """Tile-based推理 (来自demo.py)，用于大图避免OOM。E/W放CPU防超大图OOM"""
     b, c, h, w = input_.shape
     tile = min(tile_size, h, w)
@@ -93,13 +83,16 @@ def tile_inference(model, input_, condition=None, tile_size=720, tile_overlap=32
     for h_idx in h_idx_list:
         for w_idx in w_idx_list:
             in_patch = input_[..., h_idx:h_idx+tile, w_idx:w_idx+tile]
-            out_patch = model(in_patch, condition=condition).cpu()
+            out_patch = model(in_patch)
+            if isinstance(out_patch, tuple):
+                out_patch = out_patch[0]
+            out_patch = out_patch.cpu()
             E[..., h_idx:h_idx+tile, w_idx:w_idx+tile].add_(out_patch)
             W[..., h_idx:h_idx+tile, w_idx:w_idx+tile].add_(torch.ones_like(out_patch))
     return E.div_(W)
 
 
-def process_single_image(file_, gt_dir, model, device, factor, tile_size, tile_overlap, target_labels):
+def process_single_image(file_, gt_dir, model, device, factor, tile_size, tile_overlap):
     """单张图片推理+计算指标，返回 (psnr, ssim) 或 None"""
     torch.cuda.empty_cache()
     img = np.float32(utils.load_img(file_)) / 255.
@@ -113,18 +106,16 @@ def process_single_image(file_, gt_dir, model, device, factor, tile_size, tile_o
     padw = W - w if w % factor != 0 else 0
     input_ = F.pad(input_, (0, padw, 0, padh), 'reflect')
 
-    # Oracle: 查找当前图片的 target label
     fname = os.path.splitext(os.path.basename(file_))[0]
-    condition = None
-    if target_labels and fname in target_labels:
-        condition = target_labels[fname].unsqueeze(0).to(device)  # [1, 7]
 
     if tile_size and (input_.shape[2] > tile_size or input_.shape[3] > tile_size):
-        restored = tile_inference(model, input_, condition=condition,
+        restored = tile_inference(model, input_,
                                   tile_size=tile_size, tile_overlap=tile_overlap)
         restored = restored[:, :, :h, :w]  # tile_inference返回CPU tensor
     else:
-        restored = model(input_, condition=condition)
+        restored = model(input_)
+        if isinstance(restored, tuple):
+            restored = restored[0]
         restored = restored[:, :, :h, :w].cpu()
 
     restored = torch.clamp(restored, 0, 1).detach().permute(0, 2, 3, 1).squeeze(0).numpy()
@@ -155,7 +146,7 @@ def process_single_image(file_, gt_dir, model, device, factor, tile_size, tile_o
 
 
 def _gpu_worker(gpu_id, file_list, gt_dir, yaml_file, weights_path, factor,
-                tile_size, tile_overlap, target_labels, result_queue):
+                tile_size, tile_overlap, result_queue):
     """多进程worker: 在指定GPU上加载模型并推理一组图片"""
     device = f'cuda:{gpu_id}'
     model = load_model(yaml_file, weights_path, device=device)
@@ -163,7 +154,7 @@ def _gpu_worker(gpu_id, file_list, gt_dir, yaml_file, weights_path, factor,
     with torch.no_grad():
         for f in file_list:
             r = process_single_image(f, gt_dir, model, device, factor,
-                                     tile_size, tile_overlap, target_labels)
+                                     tile_size, tile_overlap)
             local_results.append(r)
     model.cpu()
     del model
@@ -172,7 +163,7 @@ def _gpu_worker(gpu_id, file_list, gt_dir, yaml_file, weights_path, factor,
 
 
 def evaluate_checkpoint(yaml_file, weights_path, num_gpus, datasets, data_dir,
-                        tile_size, tile_overlap, target_labels):
+                        tile_size, tile_overlap):
     """多GPU多进程并行评估一个checkpoint在所有数据集上的PSNR/SSIM"""
     factor = 8
     results = {}
@@ -206,7 +197,7 @@ def evaluate_checkpoint(yaml_file, weights_path, num_gpus, datasets, data_dir,
             p = mp.Process(
                 target=_gpu_worker,
                 args=(gpu_id, chunks[gpu_id], gt_dir, yaml_file, weights_path,
-                      factor, tile_size, tile_overlap, target_labels, result_queue)
+                      factor, tile_size, tile_overlap, result_queue)
             )
             processes.append(p)
             p.start()
@@ -236,7 +227,7 @@ def evaluate_checkpoint(yaml_file, weights_path, num_gpus, datasets, data_dir,
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Oracle Restormer - 在所有测试集上评估所有checkpoint')
+    parser = argparse.ArgumentParser(description='RainPredictor Restormer - 在所有测试集上评估所有checkpoint')
     parser.add_argument('--ckpt_dir', type=str,
                         default='../Restormer/experiments/Deraining_Oracle_Restormer/models/',
                         help='checkpoint目录')
@@ -244,11 +235,8 @@ def main():
                         default='./Deraining/Datasets/',
                         help='数据集根目录')
     parser.add_argument('--yaml_file', type=str,
-                        default='./Deraining/Options/Deraining_Oracle_8xA100.yml',
+                        default='./Deraining/Options/Deraining_RainPredictor_8xA100.yml',
                         help='模型配置文件')
-    parser.add_argument('--labels_path', type=str,
-                        default='./offline_features_v2/test_target_labels_7c.pt',
-                        help='测试集标签文件')
     parser.add_argument('--output', type=str,
                         default='./oracle_eval_results.csv',
                         help='输出CSV文件路径')
@@ -265,9 +253,6 @@ def main():
     num_gpus = args.num_gpus or torch.cuda.device_count()
     num_gpus = max(1, min(num_gpus, torch.cuda.device_count()))
     print(f"使用 {num_gpus} 张GPU, tile_size={args.tile}, tile_overlap={args.tile_overlap}")
-
-    # 加载测试集标签
-    target_labels = load_target_labels(args.labels_path)
 
     datasets = ['LHP-RAIN', 'RainDrop', 'RainDS-Real', 'RainDS-Syn',
                 'RealRain-1k', 'SynRain-13k', 'WeatherBench']
@@ -313,7 +298,7 @@ def main():
         print(f"{'='*80}")
 
         results = evaluate_checkpoint(args.yaml_file, ckpt_path, num_gpus, datasets,
-                                      args.data_dir, args.tile, args.tile_overlap, target_labels)
+                                      args.data_dir, args.tile, args.tile_overlap)
 
         row = [ckpt_name, iter_num]
         for d in datasets:

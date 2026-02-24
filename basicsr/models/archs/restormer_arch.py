@@ -189,6 +189,25 @@ class Upsample(nn.Module):
         return self.body(x)
 
 ##########################################################################
+## Internal Rain Pattern Predictor
+class RainPredictor(nn.Module):
+    def __init__(self, in_channels=3, num_classes=7):
+        super().__init__()
+        self.pool = nn.AvgPool2d(kernel_size=4, stride=4)
+        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1)
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(64, num_classes)
+
+    def forward(self, x):
+        x = self.pool(x)              # [B,3,H/4,W/4]
+        x = F.gelu(self.conv1(x))     # [B,32,H/8,W/8]
+        x = F.gelu(self.conv2(x))     # [B,64,H/16,W/16]
+        x = self.gap(x)               # [B,64,1,1]
+        x = x.flatten(1)              # [B,64]
+        return self.fc(x)             # [B, num_classes]
+
+##########################################################################
 ##---------- Restormer -----------------------
 class Restormer(nn.Module):
     def __init__(self, 
@@ -201,7 +220,8 @@ class Restormer(nn.Module):
         ffn_expansion_factor = 2.66,
         bias = False,
         LayerNorm_type = 'WithBias',   ## Other option 'BiasFree'
-        dual_pixel_task = False        ## True for dual-pixel defocus deblurring only. Also set inp_channels=6
+        dual_pixel_task = False,        ## True for dual-pixel defocus deblurring only. Also set inp_channels=6
+        num_rain_classes = 7
     ):
 
         super(Restormer, self).__init__()
@@ -242,51 +262,70 @@ class Restormer(nn.Module):
             
         self.output = nn.Conv2d(int(dim*2**1), out_channels, kernel_size=3, stride=1, padding=1, bias=bias)
 
-        # ---- FiLM 条件注入: 7 维天气标签 → dim 维通道缩放系数 ----
-        self.condition_mlp = nn.Sequential(
-            nn.Linear(7, dim),
-            nn.GELU(),
-            nn.Linear(dim, dim)
-        )
-        # 零初始化最后一层: 训练初期 scale≈0, feat*(1+0)=feat, 不干扰收敛
-        nn.init.zeros_(self.condition_mlp[2].weight)
-        nn.init.zeros_(self.condition_mlp[2].bias)
+        # ---- Internal RainPredictor + Multi-Stage FiLM Conditioning ----
+        self.rain_predictor = RainPredictor(in_channels=inp_channels, num_classes=num_rain_classes)
 
-    def forward(self, inp_img, condition=None):
+        self.film_mlp_L1 = nn.Sequential(nn.Linear(num_rain_classes, dim), nn.GELU(), nn.Linear(dim, dim))
+        nn.init.zeros_(self.film_mlp_L1[2].weight)
+        nn.init.zeros_(self.film_mlp_L1[2].bias)
 
-        inp_enc_level1 = self.patch_embed(inp_img)
+        self.film_mlp_L2 = nn.Sequential(nn.Linear(num_rain_classes, dim*2), nn.GELU(), nn.Linear(dim*2, dim*2))
+        nn.init.zeros_(self.film_mlp_L2[2].weight)
+        nn.init.zeros_(self.film_mlp_L2[2].bias)
 
-        # ---- FiLM: 根据天气形态对浅层特征做 channel-wise 缩放 ----
-        if condition is not None:
-            scale = self.condition_mlp(condition)          # [B, dim]
-            scale = scale.unsqueeze(-1).unsqueeze(-1)      # [B, dim, 1, 1]
-            inp_enc_level1 = inp_enc_level1 * (1 + scale)  # FiLM 调制
+        self.film_mlp_L3 = nn.Sequential(nn.Linear(num_rain_classes, dim*4), nn.GELU(), nn.Linear(dim*4, dim*4))
+        nn.init.zeros_(self.film_mlp_L3[2].weight)
+        nn.init.zeros_(self.film_mlp_L3[2].bias)
+
+    def forward(self, inp_img):
+
+        # 1. Internal Rain Prediction → Soft Label
+        rain_logits = self.rain_predictor(inp_img)        # [B, num_rain_classes]
+        soft_label = F.softmax(rain_logits, dim=-1)       # [B, num_rain_classes]
+        B = soft_label.shape[0]
+
+        # 2. Patch Embedding
+        inp_enc_level1 = self.patch_embed(inp_img)        # [B, 48, H, W]
+
+        # 3. FiLM L1
+        scale_L1 = self.film_mlp_L1(soft_label).view(B, -1, 1, 1)
+        inp_enc_level1 = inp_enc_level1 * (1 + scale_L1)
 
         out_enc_level1 = self.encoder_level1(inp_enc_level1)
-        
+
         inp_enc_level2 = self.down1_2(out_enc_level1)
+
+        # 4. FiLM L2
+        scale_L2 = self.film_mlp_L2(soft_label).view(B, -1, 1, 1)
+        inp_enc_level2 = inp_enc_level2 * (1 + scale_L2)
+
         out_enc_level2 = self.encoder_level2(inp_enc_level2)
 
         inp_enc_level3 = self.down2_3(out_enc_level2)
-        out_enc_level3 = self.encoder_level3(inp_enc_level3) 
 
-        inp_enc_level4 = self.down3_4(out_enc_level3)        
-        latent = self.latent(inp_enc_level4) 
-                        
+        # 5. FiLM L3
+        scale_L3 = self.film_mlp_L3(soft_label).view(B, -1, 1, 1)
+        inp_enc_level3 = inp_enc_level3 * (1 + scale_L3)
+
+        out_enc_level3 = self.encoder_level3(inp_enc_level3)
+
+        inp_enc_level4 = self.down3_4(out_enc_level3)
+        latent = self.latent(inp_enc_level4)
+
         inp_dec_level3 = self.up4_3(latent)
         inp_dec_level3 = torch.cat([inp_dec_level3, out_enc_level3], 1)
         inp_dec_level3 = self.reduce_chan_level3(inp_dec_level3)
-        out_dec_level3 = self.decoder_level3(inp_dec_level3) 
+        out_dec_level3 = self.decoder_level3(inp_dec_level3)
 
         inp_dec_level2 = self.up3_2(out_dec_level3)
         inp_dec_level2 = torch.cat([inp_dec_level2, out_enc_level2], 1)
         inp_dec_level2 = self.reduce_chan_level2(inp_dec_level2)
-        out_dec_level2 = self.decoder_level2(inp_dec_level2) 
+        out_dec_level2 = self.decoder_level2(inp_dec_level2)
 
         inp_dec_level1 = self.up2_1(out_dec_level2)
         inp_dec_level1 = torch.cat([inp_dec_level1, out_enc_level1], 1)
         out_dec_level1 = self.decoder_level1(inp_dec_level1)
-        
+
         out_dec_level1 = self.refinement(out_dec_level1)
 
         #### For Dual-Pixel Defocus Deblurring Task ####
@@ -298,5 +337,5 @@ class Restormer(nn.Module):
             out_dec_level1 = self.output(out_dec_level1) + inp_img
 
 
-        return out_dec_level1
+        return out_dec_level1, rain_logits
 

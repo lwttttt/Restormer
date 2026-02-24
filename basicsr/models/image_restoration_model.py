@@ -72,21 +72,9 @@ class ImageCleanModel(BaseModel):
             self.load_network(self.net_g, load_path,
                               self.opt['path'].get('strict_load_g', True), param_key=self.opt['path'].get('param_key', 'params'))
 
-        # WeatherRouter 初始化 (训练时)
-        router_opt = self.opt.get('network_router', None)
-        if router_opt and self.is_train:
-            from basicsr.models.archs.weather_router import WeatherRouter
-            self.weather_router = WeatherRouter(
-                in_channels=router_opt.get('in_channels', 3),
-                num_classes=router_opt.get('num_classes', 7)
-            ).to(self.device)
-            self.lambda_router = self.opt['train'].get('lambda_router', 0.1)
-            logger = get_root_logger()
-            n_params = sum(p.numel() for p in self.weather_router.parameters())
-            logger.info(f'WeatherRouter initialized: {n_params} params, '
-                        f'lambda_router={self.lambda_router}')
-        else:
-            self.weather_router = None
+        # RainPredictor is inside net_g; read lambda_rain for CE loss weighting
+        if self.is_train:
+            self.lambda_rain = self.opt['train'].get('lambda_rain', 0.1)
 
         if self.is_train:
             self.init_training_settings()
@@ -139,12 +127,6 @@ class ImageCleanModel(BaseModel):
                 logger = get_root_logger()
                 logger.warning(f'Params {k} will not be optimized.')
 
-        # Router 参数加入 optimizer
-        if hasattr(self, 'weather_router') and self.weather_router is not None:
-            for k, v in self.weather_router.named_parameters():
-                if v.requires_grad:
-                    optim_params.append(v)
-
         optim_type = train_opt['optim_g'].pop('type')
         if optim_type == 'Adam':
             self.optimizer_g = torch.optim.Adam(optim_params, **train_opt['optim_g'])
@@ -179,28 +161,19 @@ class ImageCleanModel(BaseModel):
 
     def optimize_parameters(self, current_iter):
         self.optimizer_g.zero_grad()
-        preds = self.net_g(self.lq, condition=self.target_label)
-        if not isinstance(preds, list):
-            preds = [preds]
-
-        self.output = preds[-1]
+        self.output, self.pred_rain_logits = self.net_g(self.lq)
 
         loss_dict = OrderedDict()
         # pixel loss
-        l_pix = 0.
-        for pred in preds:
-            l_pix += self.cri_pix(pred, self.gt)
-
+        l_pix = self.cri_pix(self.output, self.gt)
         loss_dict['l_pix'] = l_pix
+        l_total = l_pix
 
-        # Router distillation loss — CrossEntropy 原生支持 soft label target
-        if self.weather_router is not None and self.target_label is not None:
-            logits = self.weather_router(self.lq)
-            l_router = F.cross_entropy(logits, self.target_label)
-            loss_dict['l_router'] = l_router
-            l_total = l_pix + self.lambda_router * l_router
-        else:
-            l_total = l_pix
+        # Rain classification loss (CE with offline soft labels)
+        if self.target_label is not None:
+            l_rain_cls = F.cross_entropy(self.pred_rain_logits, self.target_label)
+            loss_dict['l_rain_cls'] = l_rain_cls
+            l_total = l_pix + self.lambda_rain * l_rain_cls
 
         l_total.backward()
         if self.opt['train']['use_grad_clip']:
@@ -239,7 +212,6 @@ class ImageCleanModel(BaseModel):
         E = torch.zeros(b, c, h, w).type_as(img)
         W = torch.zeros_like(E)
 
-        condition = getattr(self, 'target_label', None)
         net = self.net_g_ema if hasattr(self, 'net_g_ema') else self.net_g
         net.eval()
 
@@ -247,7 +219,9 @@ class ImageCleanModel(BaseModel):
             for h_idx in h_idx_list:
                 for w_idx in w_idx_list:
                     in_patch = img[..., h_idx:h_idx + tile, w_idx:w_idx + tile]
-                    out_patch = net(in_patch, condition=condition)
+                    out_patch = net(in_patch)
+                    if isinstance(out_patch, tuple):
+                        out_patch = out_patch[0]
                     if isinstance(out_patch, list):
                         out_patch = out_patch[-1]
                     out_patch_mask = torch.ones_like(out_patch)
@@ -262,19 +236,21 @@ class ImageCleanModel(BaseModel):
     def nonpad_test(self, img=None):
         if img is None:
             img = self.lq
-        # Oracle: 验证/测试时也传入真实天气标签
-        condition = getattr(self, 'target_label', None)
         if hasattr(self, 'net_g_ema'):
             self.net_g_ema.eval()
             with torch.no_grad():
-                pred = self.net_g_ema(img, condition=condition)
+                pred = self.net_g_ema(img)
+            if isinstance(pred, tuple):
+                pred = pred[0]
             if isinstance(pred, list):
                 pred = pred[-1]
             self.output = pred
         else:
             self.net_g.eval()
             with torch.no_grad():
-                pred = self.net_g(img, condition=condition)
+                pred = self.net_g(img)
+            if isinstance(pred, tuple):
+                pred = pred[0]
             if isinstance(pred, list):
                 pred = pred[-1]
             self.output = pred
