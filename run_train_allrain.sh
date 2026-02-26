@@ -23,6 +23,13 @@
 #   bash run_train_allrain.sh
 # ============================================================
 
+# 切换到项目目录
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# [关键] 将当前目录设为 PYTHONPATH 最高优先级，确保 import basicsr 使用本地版本
+export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
+
 # 卸载所有已加载的CUDA模块，避免冲突
 module purge 2>/dev/null
 

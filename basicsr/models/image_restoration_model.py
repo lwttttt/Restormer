@@ -154,7 +154,7 @@ class ImageCleanModel(BaseModel):
         self.lq = data['lq'].to(self.device)
         if 'gt' in data:
             self.gt = data['gt'].to(self.device)
-        # Oracle: 验证时也需要真实标签作为 condition
+        # 验证时也可接收标签 (供分析用, forward 使用内置 RainPredictor 自动预测)
         self.target_label = data.get('target_label')
         if self.target_label is not None:
             self.target_label = self.target_label.to(self.device)

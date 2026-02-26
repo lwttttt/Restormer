@@ -68,12 +68,9 @@ network_g:
   bias: False
   LayerNorm_type: WithBias
   dual_pixel_task: False
+  num_rain_classes: 7
 
-# WeatherRouter: 极轻量 CNN 路由网络 (~11K params)
-network_router:
-  type: WeatherRouter
-  in_channels: 3
-  num_classes: 7
+# WeatherRouter 已弃用，现改用 Restormer 内置 RainPredictor
 
 
 # path
@@ -88,8 +85,8 @@ train:
   warmup_iter: -1 # no warm up
   use_grad_clip: true
 
-  # Router 蒸馏 loss 权重
-  lambda_router: 0.1
+  # Internal RainPredictor CE loss weight
+  lambda_rain: 0.1
 
   # Split 200k iterations into two cycles.
   # 1st cycle: fixed 3e-4 LR for 60k iters.

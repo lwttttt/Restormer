@@ -1,14 +1,13 @@
 # ---------------------------------------------------------------
-# Oracle UpperBound 实验: FiLM 条件注入 (全程 ground truth 标签)
+# Oracle UpperBound 实验: 内置 RainPredictor + 多级 FiLM 条件注入
 #
-# 目的: 验证如果网络在训练+验证时都知道每张图的真实天气形态标签 (7维概率分布),
+# 目的: 验证当 RainPredictor 通过 CE loss 学习正确的雨纹分类时,
 #       去雨效果能提升多少? Oracle - Baseline 的 PSNR 差 = 理论增益上限。
 #
 # 与 Baseline 的区别:
-#   - 训练集和验证集都配了 target_labels_path
-#   - 不启用 WeatherRouter (network_router 已注释掉)
-#   - 只有 L1 像素 loss, 无 Router 蒸馏 loss
-#   - Restormer 的 condition_mlp 通过 FiLM 在浅层特征做 channel-wise 缩放
+#   - 训练集配了 target_labels_path, CE loss 引导内置 RainPredictor 学习正确分类
+#   - L1 像素 loss + lambda_rain * CE 蒸馏 loss
+#   - 内置 RainPredictor 预测 → softmax → 3 级 FiLM (L1/L2/L3) 调制 encoder 特征
 #
 # 训练环境: 8x A100 (80GB)
 # 数据集: sampled_dataset_balanced (7个去雨数据集的平衡采样)
@@ -62,7 +61,7 @@ datasets:
     io_backend:
       type: disk
 
-    # Oracle: 验证集也必须配标签! 否则 condition=None, FiLM 不生效
+    # Oracle: 验证集标签 (验证时内置 RainPredictor 自动预测, 标签仅供分析用)
     target_labels_path: ./offline_features_v2/val_target_labels_7c.pt
 
 # network structures
@@ -78,12 +77,9 @@ network_g:
   bias: False
   LayerNorm_type: WithBias
   dual_pixel_task: False
+  num_rain_classes: 7
 
-# Oracle 实验: 不启用 WeatherRouter, 不计算 Router loss
-# network_router:
-#   type: WeatherRouter
-#   in_channels: 3
-#   num_classes: 7
+# WeatherRouter 已弃用，现改用 Restormer 内置 RainPredictor
 
 
 # path
@@ -97,6 +93,9 @@ train:
   total_iter: 200000
   warmup_iter: -1 # no warm up
   use_grad_clip: true
+
+  # Internal RainPredictor CE loss weight
+  lambda_rain: 0.1
 
   # Split 200k iterations into two cycles.
   # 1st cycle: fixed 3e-4 LR for 60k iters.

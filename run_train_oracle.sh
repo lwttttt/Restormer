@@ -24,11 +24,12 @@
 # ============================================================
 
 # 切换到项目目录
-cd /HOME/pxyai/pxyai_0009/Restormer-oracle
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # [关键] 将当前目录设为 PYTHONPATH 最高优先级，确保 import basicsr 使用本地 Oracle 版本
-# 而非 pip 安装的原始 Restormer 版本 (否则 condition_mlp 不会被加载!)
-export PYTHONPATH="/HOME/pxyai/pxyai_0009/Restormer-oracle:$PYTHONPATH"
+# 而非 pip 安装的原始 Restormer 版本 (否则 FiLM 模块不会被加载!)
+export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
 
 # 卸载所有已加载的CUDA模块，避免冲突
 module purge 2>/dev/null
@@ -79,7 +80,7 @@ echo "实验类型: Oracle UpperBound (全程 GT 标签, 纯 L1 loss)"
 echo "============================================================"
 echo ""
 
-# [关键验证] 确认导入的 Restormer 包含 condition_mlp (FiLM 模块)
+# [关键验证] 确认导入的 Restormer 包含 FiLM 模块 (RainPredictor + film_mlp)
 echo "验证 basicsr 导入路径..."
 python -c "
 from basicsr.models.archs.restormer_arch import Restormer
@@ -87,12 +88,15 @@ m = Restormer(inp_channels=3, out_channels=3, dim=48,
               num_blocks=[4,6,6,8], num_refinement_blocks=4,
               heads=[1,2,4,8], ffn_expansion_factor=2.66,
               bias=False, LayerNorm_type='WithBias', dual_pixel_task=False)
-assert hasattr(m, 'condition_mlp'), \
-    'FATAL: condition_mlp NOT found! 导入了错误的 basicsr (原始 Restormer)，请检查 PYTHONPATH!'
+assert hasattr(m, 'film_mlp_L1'), \
+    'FATAL: film_mlp_L1 NOT found! 导入了错误的 basicsr (原始 Restormer)，请检查 PYTHONPATH!'
+assert hasattr(m, 'rain_predictor'), \
+    'FATAL: rain_predictor NOT found! 导入了错误的 basicsr，请检查 PYTHONPATH!'
 import basicsr.utils.options as opts
 print(f'  basicsr 路径: {opts.__file__}')
-print(f'  condition_mlp 参数数: {sum(p.numel() for p in m.condition_mlp.parameters())}')
-print('  [OK] condition_mlp 已确认存在')
+film_params = sum(p.numel() for n, p in m.named_parameters() if 'film_mlp' in n or 'rain_predictor' in n)
+print(f'  FiLM + RainPredictor 参数数: {film_params}')
+print('  [OK] film_mlp_L1/L2/L3 + rain_predictor 已确认存在')
 "
 if [ $? -ne 0 ]; then
     echo "[FATAL] basicsr 验证失败! 训练中止。"

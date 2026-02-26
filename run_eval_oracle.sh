@@ -9,10 +9,11 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --time=24:00:00
 
-cd /HOME/pxyai/pxyai_0009/Restormer-oracle
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # 确保导入本地 Oracle basicsr
-export PYTHONPATH="/HOME/pxyai/pxyai_0009/Restormer-oracle:$PYTHONPATH"
+export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
 
 # 加载环境
 for mod in $(module list 2>&1 | grep -oP 'CUDA/\S+'); do
@@ -35,7 +36,6 @@ python test_all_checkpoints_oracle.py \
     --ckpt_dir ./experiments/Deraining_Oracle_Restormer/models/ \
     --data_dir ./Deraining/Datasets/ \
     --yaml_file ./Deraining/Options/Deraining_Oracle_8xA100.yml \
-    --labels_path ./offline_features_v2/test_target_labels_7c.pt \
     --output ./oracle_eval_results.csv \
     --tile 720 \
     "$@"
